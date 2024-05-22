@@ -9,6 +9,10 @@ const int tempSensorPin = 25;        // Pin for LM35 temperature sensor
 
 LiquidCrystal_I2C lcd(0x27, 16, 2);  // Initialize LCD with I2C address 0x27
 
+unsigned long previousMillis = 0;    // Stores last time temperature was updated
+const long interval = 10000;         // Interval for temperature update (10 seconds)
+float temperature = 0;               // Variable to store temperature
+
 void setup() {
   // Initialize the I2C communication for the LCD
   Wire.begin(21, 22); // SDA, SCL pins
@@ -33,20 +37,31 @@ void setup() {
 }
 
 void loop() {
+  unsigned long currentMillis = millis();
+
   int flameSensorValue = digitalRead(flameSensorPin);
   int moistureSensorValue = digitalRead(moistureSensorPin);
   int gasSensorValue = analogRead(gasSensorPin);
-  int tempSensorValue = analogRead(tempSensorPin);
-
-  // Convert the analog reading (which goes from 0 - 4095) to a voltage (0 - 3.3V):
-  float voltage = tempSensorValue * (3.3 / 4095.0);
-  // Convert the voltage to a temperature in Celsius:
-  float temperature = voltage * 100.0;  // LM35 has a 10mV/°C scale factor
-  temperature -= 10;  // Adjust for 10°C offset
 
   // Print the gas sensor value to the serial monitor
   Serial.print("Gas Sensor Value: ");
   Serial.println(gasSensorValue);
+
+  // Update temperature reading every 10 seconds
+  if (currentMillis - previousMillis >= interval) {
+    previousMillis = currentMillis;
+    int tempSensorValue = analogRead(tempSensorPin);
+    // Convert the analog reading (which goes from 0 - 4095) to a voltage (0 - 3.3V):
+    float voltage = tempSensorValue * (3.3 / 4095.0);
+    // Convert the voltage to a temperature in Celsius:
+    temperature = voltage * 100.0;  // LM35 has a 10mV/°C scale factor
+    temperature -= 10;  // Adjust for 10°C offset
+
+    // Print the temperature to the serial monitor
+    Serial.print("Temperature: ");
+    Serial.print(temperature);
+    Serial.println(" C");
+  }
 
   if (flameSensorValue == HIGH) {
     lcd.setCursor(0, 0);
@@ -84,5 +99,5 @@ void loop() {
     ledcWriteTone(0, 0);    // Turn off Buzzer
   }
 
-  delay(2000); // Delay for 2 seconds to allow sensor readings to update
+  delay(100); // Delay for 100ms for sensor readings update
 }
