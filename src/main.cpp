@@ -79,7 +79,7 @@ void loop() {
     digitalWrite(19, HIGH); // Turn on Red LED
     digitalWrite(18, LOW);  // Turn off Green LED
     ledcWriteTone(0, 784);  // Produce a tone on channel 0 at 784 Hz (G5 note)
-  } else if (gasSensorValue > 2700) { // Adjust threshold as needed
+  } else if (gasSensorValue > 1400) { // Adjust threshold as needed
     lcd.setCursor(0, 0);
     lcd.print("    WARNING!    ");
     lcd.setCursor(0, 1);
@@ -89,7 +89,7 @@ void loop() {
     ledcWriteTone(0, 659);  // Produce a tone on channel 0 at 659 Hz (E5 note)
   } else {
     lcd.setCursor(0, 0);
-    lcd.print("Temp: ");
+    lcd.print(" Temp: ");
     lcd.print(temperature);
     lcd.print(" C");
     lcd.setCursor(0, 1);
