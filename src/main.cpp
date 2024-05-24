@@ -1,103 +1,225 @@
 #include <Arduino.h>
 #include <Wire.h>
 #include <LiquidCrystal_I2C.h>
+#include <WiFi.h>
+#include <PubSubClient.h>
 
-const int flameSensorPin = 34;       // Adjust pin number as needed
-const int moistureSensorPin = 32;    // Adjust pin number as needed
-const int gasSensorPin = 33;         // Adjust pin number as needed
-const int tempSensorPin = 25;        // Pin for LM35 temperature sensor
+// Sensor pins
+const int flameSensorPin = 34;
+const int moistureSensorPin = 32;
+const int gasSensorPin = 33;
+const int tempSensorPin = 25;
 
+// LCD initialization
 LiquidCrystal_I2C lcd(0x27, 16, 2);  // Initialize LCD with I2C address 0x27
 
-unsigned long previousMillis = 0;    // Stores last time temperature was updated
-const long interval = 10000;         // Interval for temperature update (10 seconds)
-float temperature = 0;               // Variable to store temperature
+// WiFi and MQTT
+const char* ssid = "iPhone";
+const char* password = "00000000";
+const char* mqttServer = "ec2-16-171-233-102.eu-north-1.compute.amazonaws.com";
+const int mqttPort = 1883;
+const char* mqttUser = "";
+const char* mqttPassword = "";
+
+WiFiClient espClient;
+PubSubClient client(espClient);
+
+TaskHandle_t Task1;
+TaskHandle_t Task2;
+
+void setup_wifi();
+void reconnect();
+void publishMessage(const char* topic, const char* payload);
+void Task1code(void * pvParameters);
+void Task2code(void * pvParameters);
+
+// Timer and temperature variables
+unsigned long previousMillis = 0;
+const long interval = 10000;
+const long tempInterval = 30000;
+float temperature = 0;
 
 void setup() {
   // Initialize the I2C communication for the LCD
-  Wire.begin(21, 22); // SDA, SCL pins
-  
-  lcd.begin(16, 2); // Initialize the LCD with 16 columns and 2 rows
-  lcd.init();       // Initialize the LCD
-  lcd.backlight();  // Turn on the backlight
-  
+  Wire.begin(21, 22);
+
+  lcd.begin(16, 2);
+  lcd.init();
+  lcd.backlight();
+
   pinMode(flameSensorPin, INPUT);
   pinMode(moistureSensorPin, INPUT);
   pinMode(gasSensorPin, INPUT);
   pinMode(tempSensorPin, INPUT);
-  pinMode(2, OUTPUT);  // Buzzer
-  pinMode(18, OUTPUT); // Green LED
-  pinMode(19, OUTPUT); // Red LED
+  pinMode(2, OUTPUT);
+  pinMode(18, OUTPUT);
+  pinMode(19, OUTPUT);
 
-  Serial.begin(115200); // Initialize serial communication for debugging
+  analogReadResolution(12); // Set ADC resolution to 12 bits
+  analogSetAttenuation(ADC_11db);
+
+  Serial.begin(115200);
 
   // Initialize LEDC
-  ledcAttachPin(2, 0);  // Attach pin 2 to channel 0
-  ledcSetup(0, 5000, 8); // 5 kHz frequency, 8-bit resolution
+  ledcAttachPin(2, 0);
+  ledcSetup(0, 5000, 8);
+
+  // Create tasks
+  xTaskCreatePinnedToCore(
+    Task1code, "Task1", 10000, NULL, 1, &Task1, 0);
+  delay(500);
+  xTaskCreatePinnedToCore(
+    Task2code, "Task2", 10000, NULL, 1, &Task2, 1);
+  delay(500);
 }
 
 void loop() {
+  // Empty loop as tasks are now handling the operations
+}
+
+void Task1code(void * pvParameters) {
+  setup_wifi();
+  client.setServer(mqttServer, mqttPort);
+
+  for (;;) {
+    if (!client.connected()) {
+      reconnect();
+    }
+    client.loop();
+    vTaskDelay(10 / portTICK_PERIOD_MS);  // Allow other tasks to run
+  }
+}
+
+void Task2code(void * pvParameters) {
   unsigned long currentMillis = millis();
 
-  int flameSensorValue = digitalRead(flameSensorPin);
-  int moistureSensorValue = digitalRead(moistureSensorPin);
-  int gasSensorValue = analogRead(gasSensorPin);
+  for (;;) {
+    currentMillis = millis();
 
-  // Print the gas sensor value to the serial monitor
-  Serial.print("Gas Sensor Value: ");
-  Serial.println(gasSensorValue);
+    int flameSensorValue = digitalRead(flameSensorPin);
+    int moistureSensorValue = digitalRead(moistureSensorPin);
+    int gasSensorValue = analogRead(gasSensorPin);
 
-  // Update temperature reading every 10 seconds
-  if (currentMillis - previousMillis >= interval) {
-    previousMillis = currentMillis;
-    int tempSensorValue = analogRead(tempSensorPin);
-    // Convert the analog reading (which goes from 0 - 4095) to a voltage (0 - 3.3V):
-    float voltage = tempSensorValue * (3.3 / 4095.0);
-    // Convert the voltage to a temperature in Celsius:
-    temperature = voltage * 100.0;  // LM35 has a 10mV/°C scale factor
-    temperature -= 10;  // Adjust for 10°C offset
+    // Update temperature reading every 10 seconds
+    if (currentMillis - previousMillis >= interval) {
+      previousMillis = currentMillis;
+      int tempSensorValue = analogRead(tempSensorPin);
+      float voltage = tempSensorValue * (3.3 / 4095.0);
+      temperature = voltage * 100.0;
+      temperature -= 10;
 
-    // Print the temperature to the serial monitor
-    Serial.print("Temperature: ");
-    Serial.print(temperature);
-    Serial.println(" C");
+      Serial.print("Analog Read Value: ");
+      Serial.println(tempSensorValue);
+      Serial.print("Voltage: ");
+      Serial.println(voltage);
+      Serial.print("Temperature: ");
+      Serial.print(temperature);
+      Serial.println(" C");
+
+      static unsigned long lastTempPublish = 0;
+      if (currentMillis - lastTempPublish >= tempInterval) {
+        lastTempPublish = currentMillis;
+        char tempStr[8];
+        dtostrf(temperature, 1, 2, tempStr);
+        publishRetainedMessage("home/temperature", tempStr);
+      }
+    }
+
+    if (flameSensorValue == HIGH) {
+      lcd.setCursor(0, 0);
+      lcd.print("    WARNING!    ");
+      lcd.setCursor(0, 1);
+      lcd.print(" FIRE DETECTED! ");
+      digitalWrite(19, HIGH);
+      digitalWrite(18, LOW);
+      ledcWriteTone(0, 523);
+      publishMessage("home/fire", "FIRE DETECTED");
+    } else if (moistureSensorValue == HIGH) {
+      lcd.setCursor(0, 0);
+      lcd.print("    WARNING!    ");
+      lcd.setCursor(0, 1);
+      lcd.print(" FLOOD DETECTED ");
+      digitalWrite(19, HIGH);
+      digitalWrite(18, LOW);
+      ledcWriteTone(0, 784);
+      publishMessage("home/flood", "FLOOD DETECTED");
+    } else if (gasSensorValue > 1400) {
+      lcd.setCursor(0, 0);
+      lcd.print("    WARNING!    ");
+      lcd.setCursor(0, 1);
+      lcd.print(" GAS DETECTED!  ");
+      digitalWrite(19, HIGH);
+      digitalWrite(18, LOW);
+      ledcWriteTone(0, 659);
+      publishMessage("home/gas", "GAS DETECTED");
+    } else {
+      lcd.setCursor(0, 0);
+      lcd.print(" Temp: ");
+      lcd.print(temperature);
+      lcd.print(" C");
+      lcd.setCursor(0, 1);
+      lcd.print("                ");
+      digitalWrite(18, HIGH);
+      digitalWrite(19, LOW);
+      ledcWriteTone(0, 0);
+    }
+
+    vTaskDelay(100 / portTICK_PERIOD_MS);
+  }
+}
+
+void setup_wifi() {
+  delay(10);
+  Serial.println();
+  Serial.print("Connecting to ");
+  Serial.println(ssid);
+
+  WiFi.begin(ssid, password);
+
+  int retries = 0;
+  const int maxRetries = 30;
+
+  while (WiFi.status() != WL_CONNECTED && retries < maxRetries) {
+    delay(500);
+    Serial.print(".");
+    retries++;
   }
 
-  if (flameSensorValue == HIGH) {
-    lcd.setCursor(0, 0);
-    lcd.print("    WARNING!    ");
-    lcd.setCursor(0, 1);
-    lcd.print(" FIRE DETECTED! ");
-    digitalWrite(19, HIGH); // Turn on Red LED
-    digitalWrite(18, LOW);  // Turn off Green LED
-    ledcWriteTone(0, 523);  // Produce a tone on channel 0 at 523 Hz (C5 note)
-  } else if (moistureSensorValue == HIGH) {
-    lcd.setCursor(0, 0);
-    lcd.print("    WARNING!    ");
-    lcd.setCursor(0, 1);
-    lcd.print(" FLOOD DETECTED ");
-    digitalWrite(19, HIGH); // Turn on Red LED
-    digitalWrite(18, LOW);  // Turn off Green LED
-    ledcWriteTone(0, 784);  // Produce a tone on channel 0 at 784 Hz (G5 note)
-  } else if (gasSensorValue > 1400) { // Adjust threshold as needed
-    lcd.setCursor(0, 0);
-    lcd.print("    WARNING!    ");
-    lcd.setCursor(0, 1);
-    lcd.print(" GAS DETECTED!  ");
-    digitalWrite(19, HIGH); // Turn on Red LED
-    digitalWrite(18, LOW);  // Turn off Green LED
-    ledcWriteTone(0, 659);  // Produce a tone on channel 0 at 659 Hz (E5 note)
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("");
+    Serial.println("WiFi connected");
+    Serial.println("IP address: ");
+    Serial.println(WiFi.localIP());
   } else {
-    lcd.setCursor(0, 0);
-    lcd.print(" Temp: ");
-    lcd.print(temperature);
-    lcd.print(" C");
-    lcd.setCursor(0, 1);
-    lcd.print("                "); // Clear second row
-    digitalWrite(18, HIGH); // Turn on Green LED
-    digitalWrite(19, LOW);  // Turn off Red LED
-    ledcWriteTone(0, 0);    // Turn off Buzzer
+    Serial.println("");
+    Serial.println("Failed to connect to WiFi");
   }
+}
 
-  delay(100); // Delay for 100ms for sensor readings update
+void reconnect() {
+  while (!client.connected()) {
+    Serial.print("Attempting MQTT connection...");
+    if (client.connect("ESP32Client", mqttUser, mqttPassword)) {
+      Serial.println("connected");
+    } else {
+      Serial.print("failed, rc=");
+      Serial.print(client.state());
+      Serial.println(" try again in 5 seconds");
+      delay(5000);
+    }
+  }
+}
+
+void publishMessage(const char* topic, const char* payload) {
+  if (!client.connected()) {
+    reconnect();
+  }
+  client.publish(topic, payload);
+}
+
+void publishRetainedMessage(const char* topic, const char* payload) {
+  if (!client.connected()) {
+    reconnect();
+  }
+  client.publish(topic, payload,true);
 }
