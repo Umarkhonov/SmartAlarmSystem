@@ -25,6 +25,8 @@ The **SmartAlertSystem** is an IoT-based project designed to enhance safety by p
     - MQTT Broker hosted on AWS EC2
     - Telegram Bot for instant messaging
     - Android Application for notifications and monitoring
+3. **Android Application**
+   https://github.com/zokirjonkodirov/SmartAlertSystem
 
 ## Getting Started
 
